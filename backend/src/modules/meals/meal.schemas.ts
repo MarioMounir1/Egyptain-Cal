@@ -34,6 +34,13 @@ export const MealPlanQuerySchema = z.object({
 
 export type MealPlanQuery = z.infer<typeof MealPlanQuerySchema>;
 
+export const GetMealsQuerySchema = z.object({
+  date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Date must be in YYYY-MM-DD format').optional(),
+  timezone: z.string().default('Africa/Cairo'),
+});
+
+export type GetMealsQuery = z.infer<typeof GetMealsQuerySchema>;
+
 // ── AI Engine Internal Response Types ─────────────────────────────────────
 
 export interface MacroRange {

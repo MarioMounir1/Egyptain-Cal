@@ -30,6 +30,9 @@ const envSchema = z.object({
   // Rate Limiting
   RATE_LIMIT_MAX: z.coerce.number().int().positive().default(100),
   RATE_LIMIT_WINDOW_MS: z.coerce.number().int().positive().default(60_000),
+
+  // JWT Auth
+  JWT_SECRET: z.string().min(8),
 });
 
 const parsed = envSchema.safeParse(process.env);

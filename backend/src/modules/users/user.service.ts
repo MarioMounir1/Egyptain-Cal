@@ -11,6 +11,8 @@ import type {
   DailyStat,
   UserStatsResponse,
 } from './user.schemas.js';
+import type { WeightLogRecord } from './weight.schemas.js';
+import type { WaterLogRecord } from './water.schemas.js';
 
 export interface CalculatedTargets {
   daily_calorie_goal: number;
@@ -341,3 +343,92 @@ export async function getUserStats(
     history,
   };
 }
+
+/**
+ * Log user weight update, inserting a log entry and syncing the user profile.
+ */
+export async function logUserWeight(userId: string, weightKg: number): Promise<WeightLogRecord> {
+  // Insert log entry
+  const SQL = `
+    INSERT INTO weight_logs (user_id, weight_kg)
+    VALUES ($1, $2)
+    RETURNING id, user_id, weight_kg, logged_at
+  `;
+  const rows = await query<WeightLogRecord>(SQL, [userId, weightKg]);
+  const log = rows[0];
+  if (!log) {
+    throw new Error('Failed to log weight');
+  }
+
+  // Update profile weight (which also recalculates recommended targets)
+  await updateProfile(userId, { weight_kg: weightKg });
+
+  return log;
+}
+
+/**
+ * Retrieve user weight log timeline.
+ */
+export async function getWeightHistory(userId: string): Promise<WeightLogRecord[]> {
+  const SQL = `
+    SELECT id, user_id, weight_kg, logged_at
+    FROM weight_logs
+    WHERE user_id = $1
+    ORDER BY logged_at DESC
+  `;
+  return await query<WeightLogRecord>(SQL, [userId]);
+}
+
+/**
+ * Log user water intake.
+ */
+export async function logWaterIntake(userId: string, amountMl: number): Promise<WaterLogRecord> {
+  const SQL = `
+    INSERT INTO water_logs (user_id, amount_ml)
+    VALUES ($1, $2)
+    RETURNING id, user_id, amount_ml, logged_at
+  `;
+  const rows = await query<WaterLogRecord>(SQL, [userId, amountMl]);
+  const log = rows[0];
+  if (!log) {
+    throw new Error('Failed to log water intake');
+  }
+  return log;
+}
+
+/**
+ * Get daily water logs and total intake for a user on a given date and timezone.
+ */
+export async function getDailyWaterIntake(
+  userId: string,
+  dateStr: string,
+  timezone: string = 'Africa/Cairo'
+): Promise<{ total_ml: number; logs: WaterLogRecord[] }> {
+  const SQL = `
+    SELECT id, user_id, amount_ml, logged_at
+    FROM water_logs
+    WHERE user_id = $1
+      AND (logged_at AT TIME ZONE $2)::date = $3::date
+    ORDER BY logged_at DESC
+  `;
+  const logs = await query<WaterLogRecord>(SQL, [userId, timezone, dateStr]);
+  const total_ml = logs.reduce((sum, log) => sum + Number(log.amount_ml), 0);
+  return { total_ml, logs };
+}
+
+/**
+ * Delete a water log entry.
+ */
+export async function deleteWaterLog(userId: string, logId: string): Promise<void> {
+  const SQL = `
+    DELETE FROM water_logs
+    WHERE id = $1 AND user_id = $2
+    RETURNING id
+  `;
+  const rows = await query<{ id: string }>(SQL, [logId, userId]);
+  if (rows.length === 0) {
+    throw new ValidationError('Water log not found or does not belong to user');
+  }
+}
+
+

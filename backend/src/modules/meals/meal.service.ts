@@ -701,3 +701,69 @@ export async function generateMealPlan(userId: string): Promise<MealPlanResponse
     },
   };
 }
+
+export interface MealLogRecord {
+  id: string;
+  raw_text: string;
+  calorie_min: number;
+  calorie_max: number;
+  protein_min_g: number;
+  protein_max_g: number;
+  carbs_min_g: number;
+  carbs_max_g: number;
+  fat_min_g: number;
+  fat_max_g: number;
+  alerts: string[];
+  food_id: string | null;
+  source: string;
+  logged_at: string;
+}
+
+/**
+ * Retrieves meal logs for a specific user on a specific date in a specific timezone.
+ */
+export async function getMealsByDate(
+  userId: string,
+  dateStr: string,
+  timezone: string = 'Africa/Cairo'
+): Promise<MealLogRecord[]> {
+  const SQL = `
+    SELECT
+      id,
+      raw_text,
+      calorie_min,
+      calorie_max,
+      protein_min_g,
+      protein_max_g,
+      carbs_min_g,
+      carbs_max_g,
+      fat_min_g,
+      fat_max_g,
+      alerts,
+      food_id,
+      source,
+      logged_at
+    FROM daily_calorie_logs
+    WHERE user_id = $1
+      AND (logged_at AT TIME ZONE $2)::date = $3::date
+    ORDER BY logged_at DESC
+  `;
+
+  return await query<MealLogRecord>(SQL, [userId, timezone, dateStr]);
+}
+
+/**
+ * Deletes a specific meal log owned by the user.
+ */
+export async function deleteMealLog(userId: string, logId: string): Promise<void> {
+  const SQL = `
+    DELETE FROM daily_calorie_logs
+    WHERE id = $1 AND user_id = $2
+    RETURNING id
+  `;
+  const rows = await query<{ id: string }>(SQL, [logId, userId]);
+  if (rows.length === 0) {
+    throw new ValidationError('Meal log not found or does not belong to user');
+  }
+}
+

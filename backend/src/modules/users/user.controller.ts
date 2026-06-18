@@ -14,11 +14,18 @@ import {
   type CalculateTargetsBody,
   type UserStatsQuery,
 } from './user.schemas.js';
+import { LogWeightBodySchema } from './weight.schemas.js';
+import { LogWaterBodySchema, GetWaterQuerySchema } from './water.schemas.js';
 import {
   getUserProfile,
   updateProfile,
   calculateMifflinStJeor,
   getUserStats,
+  logUserWeight,
+  getWeightHistory,
+  logWaterIntake,
+  getDailyWaterIntake,
+  deleteWaterLog,
 } from './user.service.js';
 
 export async function userRoutes(fastify: FastifyInstance): Promise<void> {
@@ -237,4 +244,226 @@ export async function userRoutes(fastify: FastifyInstance): Promise<void> {
       return reply.status(200).send({ status: 'success', data: stats });
     },
   );
+
+  /**
+   * POST /api/v1/users/:id/weight
+   * Log user weight update.
+   */
+  fastify.post(
+    '/:id/weight',
+    {
+      preValidation: [fastify.authenticate],
+      schema: {
+        description: 'Log a new weight entry for the user. Recalculates nutritional goals.',
+        tags: ['users'],
+        params: {
+          type: 'object',
+          required: ['id'],
+          properties: {
+            id: { type: 'string', format: 'uuid' },
+          },
+        },
+        body: {
+          type: 'object',
+          required: ['weight_kg'],
+          properties: {
+            weight_kg: { type: 'number', minimum: 0, description: 'Weight in kg' },
+          },
+        },
+      },
+    },
+    async (req: FastifyRequest<{ Params: { id: string } }>, reply: FastifyReply) => {
+      const { id } = req.params;
+      const userToken = req.user as { id: string };
+      if (id !== userToken.id) {
+        throw new ValidationError('You can only log weight for your own profile');
+      }
+
+      let validatedBody;
+      try {
+        validatedBody = LogWeightBodySchema.parse(req.body);
+      } catch (err) {
+        if (err instanceof ZodError) {
+          throw new ValidationError('Invalid request payload', err.flatten().fieldErrors);
+        }
+        throw err;
+      }
+
+      const log = await logUserWeight(id, validatedBody.weight_kg);
+      return reply.status(201).send({ status: 'success', data: log });
+    }
+  );
+
+  /**
+   * GET /api/v1/users/:id/weight/history
+   * Retrieve user weight history.
+   */
+  fastify.get(
+    '/:id/weight/history',
+    {
+      preValidation: [fastify.authenticate],
+      schema: {
+        description: 'Get weight timeline history for the user.',
+        tags: ['users'],
+        params: {
+          type: 'object',
+          required: ['id'],
+          properties: {
+            id: { type: 'string', format: 'uuid' },
+          },
+        },
+      },
+    },
+    async (req: FastifyRequest<{ Params: { id: string } }>, reply: FastifyReply) => {
+      const { id } = req.params;
+      const userToken = req.user as { id: string };
+      if (id !== userToken.id) {
+        throw new ValidationError('You can only view your own weight history');
+      }
+
+      const history = await getWeightHistory(id);
+      return reply.status(200).send({ status: 'success', data: history });
+    }
+  );
+
+  /**
+   * POST /api/v1/users/:id/water
+   * Log user water intake.
+   */
+  fastify.post(
+    '/:id/water',
+    {
+      preValidation: [fastify.authenticate],
+      schema: {
+        description: 'Log water intake (ml).',
+        tags: ['users'],
+        params: {
+          type: 'object',
+          required: ['id'],
+          properties: {
+            id: { type: 'string', format: 'uuid' },
+          },
+        },
+        body: {
+          type: 'object',
+          required: ['amount_ml'],
+          properties: {
+            amount_ml: { type: 'integer', minimum: 0, description: 'Amount of water in ml' },
+          },
+        },
+      },
+    },
+    async (req: FastifyRequest<{ Params: { id: string } }>, reply: FastifyReply) => {
+      const { id } = req.params;
+      const userToken = req.user as { id: string };
+      if (id !== userToken.id) {
+        throw new ValidationError('You can only log water for your own profile');
+      }
+
+      let validatedBody;
+      try {
+        validatedBody = LogWaterBodySchema.parse(req.body);
+      } catch (err) {
+        if (err instanceof ZodError) {
+          throw new ValidationError('Invalid request payload', err.flatten().fieldErrors);
+        }
+        throw err;
+      }
+
+      const log = await logWaterIntake(id, validatedBody.amount_ml);
+      return reply.status(201).send({ status: 'success', data: log });
+    }
+  );
+
+  /**
+   * GET /api/v1/users/:id/water/today
+   * Fetch daily water intake logs and total.
+   */
+  fastify.get(
+    '/:id/water/today',
+    {
+      preValidation: [fastify.authenticate],
+      schema: {
+        description: 'Get daily water logs and total for the user (defaults to local today).',
+        tags: ['users'],
+        params: {
+          type: 'object',
+          required: ['id'],
+          properties: {
+            id: { type: 'string', format: 'uuid' },
+          },
+        },
+        querystring: {
+          type: 'object',
+          properties: {
+            date: { type: 'string', pattern: '^\\d{4}-\\d{2}-\\d{2}$' },
+            timezone: { type: 'string', default: 'Africa/Cairo' },
+          },
+        },
+      },
+    },
+    async (req: FastifyRequest<{ Params: { id: string } }>, reply: FastifyReply) => {
+      const { id } = req.params;
+      const userToken = req.user as { id: string };
+      if (id !== userToken.id) {
+        throw new ValidationError('You can only view your own water logs');
+      }
+
+      let validatedQuery;
+      try {
+        validatedQuery = GetWaterQuerySchema.parse(req.query);
+      } catch (err) {
+        if (err instanceof ZodError) {
+          throw new ValidationError('Invalid query parameters', err.flatten().fieldErrors);
+        }
+        throw err;
+      }
+
+      const dateStr = validatedQuery.date || getLocalDateString(new Date(), validatedQuery.timezone);
+      const data = await getDailyWaterIntake(id, dateStr, validatedQuery.timezone);
+      return reply.status(200).send({ status: 'success', data });
+    }
+  );
+
+  /**
+   * DELETE /api/v1/users/:id/water/:logId
+   * Delete a water log entry.
+   */
+  fastify.delete(
+    '/:id/water/:logId',
+    {
+      preValidation: [fastify.authenticate],
+      schema: {
+        description: 'Delete a water log by UUID.',
+        tags: ['users'],
+        params: {
+          type: 'object',
+          required: ['id', 'logId'],
+          properties: {
+            id: { type: 'string', format: 'uuid' },
+            logId: { type: 'string', format: 'uuid' },
+          },
+        },
+      },
+    },
+    async (req: FastifyRequest<{ Params: { id: string; logId: string } }>, reply: FastifyReply) => {
+      const { id, logId } = req.params;
+      const userToken = req.user as { id: string };
+      if (id !== userToken.id) {
+        throw new ValidationError('You can only delete your own water logs');
+      }
+
+      await deleteWaterLog(id, logId);
+      return reply.status(200).send({ status: 'success', message: 'Water log deleted successfully' });
+    }
+  );
+}
+
+function getLocalDateString(date: Date, timezone: string): string {
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: timezone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).format(date);
 }

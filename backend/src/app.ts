@@ -5,17 +5,26 @@
  * This separation allows easy testing (create app without listening).
  */
 
-import Fastify, { type FastifyInstance } from 'fastify';
+import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from 'fastify';
 import cors from '@fastify/cors';
 import helmet from '@fastify/helmet';
 import rateLimit from '@fastify/rate-limit';
 import fp from 'fastify-plugin';
+import fastifyJwt from '@fastify/jwt';
 
 import { env } from './config/env.js';
 import errorHandler from './shared/errors/errorHandler.js';
 import { mealRoutes } from './modules/meals/index.js';
 import { foodRoutes } from './modules/foods/index.js';
 import { userRoutes } from './modules/users/index.js';
+import { authRoutes } from './modules/auth/index.js';
+import { sponsorRoutes } from './modules/sponsors/index.js';
+
+declare module 'fastify' {
+  interface FastifyInstance {
+    authenticate: (request: FastifyRequest, reply: FastifyReply) => Promise<void>;
+  }
+}
 
 export async function buildApp(): Promise<FastifyInstance> {
   const fastify = Fastify({
@@ -53,6 +62,23 @@ export async function buildApp(): Promise<FastifyInstance> {
     }),
   });
 
+  // ── Authentication ────────────────────────────────────────────────────────
+  await fastify.register(fastifyJwt, {
+    secret: env.JWT_SECRET,
+  });
+
+  fastify.decorate('authenticate', async (request: FastifyRequest, reply: FastifyReply) => {
+    try {
+      await request.jwtVerify();
+    } catch (err) {
+      return reply.status(401).send({
+        status: 'error',
+        code: 'UNAUTHORIZED',
+        message: 'Unauthorized',
+      });
+    }
+  });
+
   // ── Global Error Handler ──────────────────────────────────────────────────
   await fastify.register(errorHandler);
 
@@ -69,9 +95,11 @@ export async function buildApp(): Promise<FastifyInstance> {
   // ── Module Routes ─────────────────────────────────────────────────────────
   await fastify.register(
     fp(async (app) => {
+      await app.register(authRoutes, { prefix: '/api/v1/auth' });
       await app.register(mealRoutes, { prefix: '/api/v1/meals' });
       await app.register(foodRoutes, { prefix: '/api/v1/foods' });
       await app.register(userRoutes, { prefix: '/api/v1/users' });
+      await app.register(sponsorRoutes, { prefix: '/api/v1/sponsors' });
     }),
   );
 

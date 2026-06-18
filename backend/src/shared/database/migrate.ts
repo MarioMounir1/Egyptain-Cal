@@ -25,6 +25,7 @@ CREATE TABLE IF NOT EXISTS users (
   id            UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
   email         VARCHAR(255) NOT NULL,
   display_name  VARCHAR(100) NOT NULL,
+  password_hash VARCHAR(255),
   daily_calorie_goal INTEGER,
   weight_kg       NUMERIC(5,2),
   height_cm       NUMERIC(5,2),
@@ -150,6 +151,7 @@ ALTER TABLE daily_calorie_logs
 -- Add profile metadata and target macros columns
 -- ───────────────────────────────────────────────────────────────────────────
 ALTER TABLE users
+  ADD COLUMN IF NOT EXISTS password_hash   VARCHAR(255),
   ADD COLUMN IF NOT EXISTS weight_kg       NUMERIC(5,2),
   ADD COLUMN IF NOT EXISTS height_cm       NUMERIC(5,2),
   ADD COLUMN IF NOT EXISTS age             INTEGER,
@@ -159,6 +161,30 @@ ALTER TABLE users
   ADD COLUMN IF NOT EXISTS target_protein_g NUMERIC(6,2),
   ADD COLUMN IF NOT EXISTS target_carbs_g   NUMERIC(6,2),
   ADD COLUMN IF NOT EXISTS target_fat_g     NUMERIC(6,2);
+
+-- ───────────────────────────────────────────────────────────────────────────
+-- TABLE: weight_logs
+-- ───────────────────────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS weight_logs (
+  id          UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  user_id     UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  weight_kg   NUMERIC(5,2) NOT NULL,
+  logged_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_weight_logs_user_time ON weight_logs (user_id, logged_at DESC);
+
+-- ───────────────────────────────────────────────────────────────────────────
+-- TABLE: water_logs
+-- ───────────────────────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS water_logs (
+  id          UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  user_id     UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  amount_ml   INTEGER NOT NULL,
+  logged_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_water_logs_user_time ON water_logs (user_id, logged_at DESC);
 `;
 
 async function migrate(): Promise<void> {
