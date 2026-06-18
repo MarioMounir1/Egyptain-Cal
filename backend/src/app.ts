@@ -15,6 +15,7 @@ import { env } from './config/env.js';
 import errorHandler from './shared/errors/errorHandler.js';
 import { mealRoutes } from './modules/meals/index.js';
 import { foodRoutes } from './modules/foods/index.js';
+import { userRoutes } from './modules/users/index.js';
 
 export async function buildApp(): Promise<FastifyInstance> {
   const fastify = Fastify({
@@ -70,6 +71,7 @@ export async function buildApp(): Promise<FastifyInstance> {
     fp(async (app) => {
       await app.register(mealRoutes, { prefix: '/api/v1/meals' });
       await app.register(foodRoutes, { prefix: '/api/v1/foods' });
+      await app.register(userRoutes, { prefix: '/api/v1/users' });
     }),
   );
 

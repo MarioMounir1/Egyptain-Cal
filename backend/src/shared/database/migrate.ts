@@ -26,6 +26,15 @@ CREATE TABLE IF NOT EXISTS users (
   email         VARCHAR(255) NOT NULL,
   display_name  VARCHAR(100) NOT NULL,
   daily_calorie_goal INTEGER,
+  weight_kg       NUMERIC(5,2),
+  height_cm       NUMERIC(5,2),
+  age             INTEGER,
+  gender          VARCHAR(10), -- 'male' | 'female' | 'other'
+  activity_level  VARCHAR(30), -- 'sedentary' | 'lightly_active' | 'moderately_active' | 'very_active' | 'extra_active'
+  goal            VARCHAR(30), -- 'lose_weight' | 'maintain_weight' | 'gain_weight'
+  target_protein_g NUMERIC(6,2),
+  target_carbs_g   NUMERIC(6,2),
+  target_fat_g     NUMERIC(6,2),
   created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
@@ -135,6 +144,21 @@ ALTER TABLE daily_calorie_logs
   ADD COLUMN IF NOT EXISTS food_id UUID REFERENCES foods(id) ON DELETE SET NULL,
   ADD COLUMN IF NOT EXISTS source  VARCHAR(20) NOT NULL DEFAULT 'ai';
   -- source values: 'db_lookup' | 'ai_text' | 'ai_photo' | 'ai_screenshot' | 'manual'
+
+-- ───────────────────────────────────────────────────────────────────────────
+-- ALTER: users
+-- Add profile metadata and target macros columns
+-- ───────────────────────────────────────────────────────────────────────────
+ALTER TABLE users
+  ADD COLUMN IF NOT EXISTS weight_kg       NUMERIC(5,2),
+  ADD COLUMN IF NOT EXISTS height_cm       NUMERIC(5,2),
+  ADD COLUMN IF NOT EXISTS age             INTEGER,
+  ADD COLUMN IF NOT EXISTS gender          VARCHAR(10),
+  ADD COLUMN IF NOT EXISTS activity_level  VARCHAR(30),
+  ADD COLUMN IF NOT EXISTS goal            VARCHAR(30),
+  ADD COLUMN IF NOT EXISTS target_protein_g NUMERIC(6,2),
+  ADD COLUMN IF NOT EXISTS target_carbs_g   NUMERIC(6,2),
+  ADD COLUMN IF NOT EXISTS target_fat_g     NUMERIC(6,2);
 `;
 
 async function migrate(): Promise<void> {
