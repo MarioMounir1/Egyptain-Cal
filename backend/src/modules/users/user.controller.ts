@@ -9,10 +9,17 @@ import { ValidationError } from '../../shared/errors/AppError.js';
 import {
   UpdateProfileBodySchema,
   CalculateTargetsBodySchema,
+  UserStatsQuerySchema,
   type UpdateProfileBody,
   type CalculateTargetsBody,
+  type UserStatsQuery,
 } from './user.schemas.js';
-import { getUserProfile, updateProfile, calculateMifflinStJeor } from './user.service.js';
+import {
+  getUserProfile,
+  updateProfile,
+  calculateMifflinStJeor,
+  getUserStats,
+} from './user.service.js';
 
 export async function userRoutes(fastify: FastifyInstance): Promise<void> {
   /**
@@ -144,6 +151,90 @@ export async function userRoutes(fastify: FastifyInstance): Promise<void> {
       );
 
       return reply.status(200).send({ status: 'success', data: results });
+    },
+  );
+
+  /**
+   * GET /api/v1/users/:id/stats
+   * Fetch user daily calorie aggregation and logging streak stats.
+   */
+  fastify.get(
+    '/:id/stats',
+    {
+      schema: {
+        description: 'Retrieve daily calorie/macro aggregated stats and logging streaks.',
+        tags: ['users'],
+        params: {
+          type: 'object',
+          required: ['id'],
+          properties: {
+            id: { type: 'string', format: 'uuid', description: 'The database UUID of the user' },
+          },
+        },
+        querystring: {
+          type: 'object',
+          properties: {
+            range: { type: 'string', enum: ['week', 'month'], default: 'week' },
+            timezone: { type: 'string', default: 'Africa/Cairo' },
+          },
+        },
+        response: {
+          200: {
+            type: 'object',
+            properties: {
+              status: { type: 'string' },
+              data: {
+                type: 'object',
+                properties: {
+                  range: { type: 'string' },
+                  summary: {
+                    type: 'object',
+                    properties: {
+                      currentStreak: { type: 'integer' },
+                      longestStreak: { type: 'integer' },
+                      averageCalorieIntake: { type: 'integer' },
+                      averageCalorieDeficitOrSurplus: { type: 'integer' },
+                    },
+                  },
+                  history: {
+                    type: 'array',
+                    items: {
+                      type: 'object',
+                      properties: {
+                        date: { type: 'string' },
+                        calories: { type: 'integer' },
+                        protein: { type: 'number' },
+                        carbs: { type: 'number' },
+                        fat: { type: 'number' },
+                        deficitOrSurplus: { type: 'integer' },
+                        targetCalories: { type: 'integer' },
+                        targetProtein: { type: 'number' },
+                        targetCarbs: { type: 'number' },
+                        targetFat: { type: 'number' },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+    },
+    async (req: FastifyRequest<{ Params: { id: string } }>, reply: FastifyReply) => {
+      const { id } = req.params;
+      let validatedQuery: UserStatsQuery;
+      try {
+        validatedQuery = UserStatsQuerySchema.parse(req.query);
+      } catch (err) {
+        if (err instanceof ZodError) {
+          throw new ValidationError('Invalid query parameters', err.flatten().fieldErrors);
+        }
+        throw err;
+      }
+
+      const stats = await getUserStats(id, validatedQuery.range, validatedQuery.timezone);
+      return reply.status(200).send({ status: 'success', data: stats });
     },
   );
 }

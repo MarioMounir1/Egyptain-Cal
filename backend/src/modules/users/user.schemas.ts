@@ -67,3 +67,37 @@ export interface UserProfileRecord {
   created_at: string;
   updated_at: string;
 }
+
+export const UserStatsQuerySchema = z.object({
+  range: z.enum(['week', 'month']).default('week'),
+  timezone: z.string().default('Africa/Cairo'),
+});
+
+export type UserStatsQuery = z.infer<typeof UserStatsQuerySchema>;
+
+export interface DailyStat {
+  date: string;
+  calories: number;
+  protein: number;
+  carbs: number;
+  fat: number;
+  deficitOrSurplus: number;
+  targetCalories: number;
+  targetProtein: number;
+  targetCarbs: number;
+  targetFat: number;
+}
+
+export interface UserStatsResponse {
+  status: 'success';
+  data: {
+    range: 'week' | 'month';
+    summary: {
+      currentStreak: number;
+      longestStreak: number;
+      averageCalorieIntake: number;
+      averageCalorieDeficitOrSurplus: number;
+    };
+    history: DailyStat[];
+  };
+}

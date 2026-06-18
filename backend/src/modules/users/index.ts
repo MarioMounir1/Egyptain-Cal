@@ -13,4 +13,8 @@ export type {
   UpdateProfileBody,
   CalculateTargetsBody,
   UserProfileRecord,
+  UserStatsQuery,
+  DailyStat,
+  UserStatsResponse,
 } from './user.schemas.js';
+export { UserStatsQuerySchema } from './user.schemas.js';

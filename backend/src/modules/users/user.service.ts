@@ -5,7 +5,12 @@
 
 import { query } from '../../shared/database/pool.js';
 import { NotFoundError } from '../../shared/errors/AppError.js';
-import type { UpdateProfileBody, UserProfileRecord } from './user.schemas.js';
+import type {
+  UpdateProfileBody,
+  UserProfileRecord,
+  DailyStat,
+  UserStatsResponse,
+} from './user.schemas.js';
 
 export interface CalculatedTargets {
   daily_calorie_goal: number;
@@ -171,4 +176,168 @@ export async function updateProfile(
   }
 
   return rows[0];
+}
+
+function getLocalDateString(date: Date, timezone: string): string {
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: timezone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).format(date);
+}
+
+function getYesterdayLocalDateString(timezone: string): string {
+  const d = new Date();
+  d.setDate(d.getDate() - 1);
+  return getLocalDateString(d, timezone);
+}
+
+export async function getUserStats(
+  userId: string,
+  range: 'week' | 'month',
+  timezone: string = 'Africa/Cairo',
+): Promise<UserStatsResponse['data']> {
+  // 1. Fetch user targets
+  const user = await getUserProfile(userId);
+  const targetCal = Number(user.daily_calorie_goal || 0);
+  const targetProt = Number(user.target_protein_g || 0);
+  const targetCarb = Number(user.target_carbs_g || 0);
+  const targetFat = Number(user.target_fat_g || 0);
+
+  const rangeDays = range === 'week' ? 7 : 30;
+
+  // 2. Fetch daily aggregations from DB in user's local timezone
+  const AGG_SQL = `
+    SELECT
+      (logged_at AT TIME ZONE $2)::date::text AS log_date,
+      SUM((calorie_min + calorie_max) / 2.0) AS total_calories,
+      SUM((protein_min_g + protein_max_g) / 2.0) AS total_protein,
+      SUM((carbs_min_g + carbs_max_g) / 2.0) AS total_carbs,
+      SUM((fat_min_g + fat_max_g) / 2.0) AS total_fat
+    FROM daily_calorie_logs
+    WHERE user_id = $1
+      AND logged_at >= NOW() - ($3 || ' days')::INTERVAL
+    GROUP BY log_date
+    ORDER BY log_date ASC
+  `;
+
+  interface AggRow {
+    log_date: string;
+    total_calories: string;
+    total_protein: string;
+    total_carbs: string;
+    total_fat: string;
+  }
+
+  const rows = await query<AggRow>(AGG_SQL, [userId, timezone, rangeDays]);
+
+  // 3. Fill missing dates with 0s to complete the sequence
+  const history: DailyStat[] = [];
+  const today = new Date();
+
+  for (let i = rangeDays - 1; i >= 0; i--) {
+    const d = new Date(today);
+    d.setDate(today.getDate() - i);
+    const dateStr = getLocalDateString(d, timezone);
+
+    const row = rows.find((r) => r.log_date === dateStr);
+    const calories = row ? Math.round(Number(row.total_calories)) : 0;
+    const protein = row ? Number(Number(row.total_protein).toFixed(1)) : 0;
+    const carbs = row ? Number(Number(row.total_carbs).toFixed(1)) : 0;
+    const fat = row ? Number(Number(row.total_fat).toFixed(1)) : 0;
+
+    history.push({
+      date: dateStr,
+      calories,
+      protein,
+      carbs,
+      fat,
+      deficitOrSurplus: targetCal > 0 ? calories - targetCal : 0,
+      targetCalories: targetCal,
+      targetProtein: targetProt,
+      targetCarbs: targetCarb,
+      targetFat: targetFat,
+    });
+  }
+
+  // 4. Calculate consecutive logging streaks using distinct logged days
+  const STREAK_SQL = `
+    SELECT DISTINCT (logged_at AT TIME ZONE $2)::date::text AS log_date
+    FROM daily_calorie_logs
+    WHERE user_id = $1
+    ORDER BY log_date DESC
+  `;
+
+  const distinctRows = await query<{ log_date: string }>(STREAK_SQL, [userId, timezone]);
+  const distinctDates = distinctRows.map((r) => r.log_date);
+
+  let currentStreak = 0;
+  let longestStreak = 0;
+
+  if (distinctDates.length > 0) {
+    const todayStr = getLocalDateString(new Date(), timezone);
+    const yesterdayStr = getYesterdayLocalDateString(timezone);
+
+    const firstDate = distinctDates[0];
+    const isActive = firstDate === todayStr || firstDate === yesterdayStr;
+
+    if (isActive) {
+      currentStreak = 1;
+      const expectedDate = new Date(firstDate);
+
+      for (let i = 1; i < distinctDates.length; i++) {
+        expectedDate.setDate(expectedDate.getDate() - 1);
+        const expectedStr = getLocalDateString(expectedDate, timezone);
+        if (distinctDates[i] === expectedStr) {
+          currentStreak++;
+        } else {
+          break;
+        }
+      }
+    }
+
+    // Calculate longest streak historically
+    let currentRun = 1;
+    let runExpectedDate = new Date(distinctDates[0]);
+    longestStreak = 1;
+
+    for (let i = 1; i < distinctDates.length; i++) {
+      runExpectedDate.setDate(runExpectedDate.getDate() - 1);
+      const expectedStr = getLocalDateString(runExpectedDate, timezone);
+
+      if (distinctDates[i] === expectedStr) {
+        currentRun++;
+      } else {
+        if (currentRun > longestStreak) {
+          longestStreak = currentRun;
+        }
+        currentRun = 1;
+        runExpectedDate = new Date(distinctDates[i]);
+      }
+    }
+    if (currentRun > longestStreak) {
+      longestStreak = currentRun;
+    }
+  }
+
+  // 5. Calculate nutritional averages over tracked days only
+  const loggedDays = history.filter((h) => h.calories > 0);
+  const averageCalorieIntake = loggedDays.length > 0
+    ? Math.round(loggedDays.reduce((sum, h) => sum + h.calories, 0) / loggedDays.length)
+    : 0;
+  const averageCalorieDeficitOrSurplus = targetCal > 0 && averageCalorieIntake > 0
+    ? averageCalorieIntake - targetCal
+    : 0;
+
+  return {
+    range,
+    summary: {
+      currentStreak,
+      longestStreak,
+      averageCalorieIntake,
+      averageCalorieDeficitOrSurplus,
+    },
+    history,
+  };
 }
