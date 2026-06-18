@@ -10,10 +10,12 @@ import { ValidationError } from '../../shared/errors/AppError.js';
 import {
   AnalyzeMealBodySchema,
   AnalyzePhotoMealBodySchema,
+  MealPlanQuerySchema,
   type AnalyzeMealBody,
   type AnalyzePhotoMealBody,
+  type MealPlanQuery,
 } from './meal.schemas.js';
-import { analyzeMeal, analyzePhotoMeal } from './meal.service.js';
+import { analyzeMeal, analyzePhotoMeal, generateMealPlan } from './meal.service.js';
 
 export async function mealRoutes(fastify: FastifyInstance): Promise<void> {
   /**
@@ -164,6 +166,107 @@ export async function mealRoutes(fastify: FastifyInstance): Promise<void> {
       }
 
       const result = await analyzePhotoMeal(validatedBody);
+      return reply.status(200).send(result);
+    },
+  );
+
+  /**
+   * GET /api/v1/meals/plan
+   *
+   * Query: { userId: string }
+   */
+  fastify.get(
+    '/plan',
+    {
+      schema: {
+        description: 'Generate a personalized daily meal plan based on user macro targets.',
+        tags: ['meals'],
+        querystring: {
+          type: 'object',
+          required: ['userId'],
+          properties: {
+            userId: {
+              type: 'string',
+              format: 'uuid',
+              description: 'The ID of the user to generate a plan for',
+            },
+          },
+        },
+        response: {
+          200: {
+            type: 'object',
+            properties: {
+              status: { type: 'string' },
+              source: { type: 'string' },
+              data: {
+                type: 'array',
+                items: {
+                  type: 'object',
+                  properties: {
+                    mealType: { type: 'string' },
+                    foodId: { type: 'string', nullable: true },
+                    name: { type: 'string' },
+                    name_en: { type: 'string', nullable: true },
+                    category: { type: 'string', nullable: true },
+                    serving_desc: { type: 'string', nullable: true },
+                    caloriesRange: { type: 'string' },
+                    proteinRange: { type: 'string' },
+                    carbsRange: { type: 'string' },
+                    fatRange: { type: 'string' },
+                    alerts: { type: 'array', items: { type: 'string' } },
+                  },
+                },
+              },
+              totals: {
+                type: 'object',
+                properties: {
+                  calories: {
+                    type: 'object',
+                    properties: {
+                      target: { type: 'integer' },
+                      actual: { type: 'integer' },
+                    },
+                  },
+                  protein: {
+                    type: 'object',
+                    properties: {
+                      target: { type: 'number' },
+                      actual: { type: 'number' },
+                    },
+                  },
+                  carbs: {
+                    type: 'object',
+                    properties: {
+                      target: { type: 'number' },
+                      actual: { type: 'number' },
+                    },
+                  },
+                  fat: {
+                    type: 'object',
+                    properties: {
+                      target: { type: 'number' },
+                      actual: { type: 'number' },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+    },
+    async (req: FastifyRequest, reply: FastifyReply) => {
+      let validatedQuery: MealPlanQuery;
+      try {
+        validatedQuery = MealPlanQuerySchema.parse(req.query);
+      } catch (err) {
+        if (err instanceof ZodError) {
+          throw new ValidationError('Invalid query parameters', err.flatten().fieldErrors);
+        }
+        throw err;
+      }
+
+      const result = await generateMealPlan(validatedQuery.userId);
       return reply.status(200).send(result);
     },
   );

@@ -13,11 +13,16 @@ import {
   createFood,
   computeIntRange,
   computeDecimalRange,
+  type FoodRecord,
 } from '../foods/index.js';
+import { getUserProfile } from '../users/index.js';
+import { generateAIMealPlan } from '../../shared/ai/ollamaClient.js';
 import type {
   AnalyzeMealBody,
   AnalyzePhotoMealBody,
   AnalyzeMealResponse,
+  MealPlanResponse,
+  MealPlanItem,
 } from './meal.schemas.js';
 
 // ── Persistence ─────────────────────────────────────────────────────────────
@@ -293,6 +298,406 @@ export async function analyzePhotoMeal(body: AnalyzePhotoMealBody): Promise<Anal
       userId,
       analyzedAt: new Date().toISOString(),
       logId,
+    },
+  };
+}
+
+function classifyFood(food: FoodRecord): ('breakfast' | 'lunch' | 'dinner' | 'snack')[] {
+  const categories: ('breakfast' | 'lunch' | 'dinner' | 'snack')[] = [];
+  const nameLower = (food.name + ' ' + (food.name_en || '') + ' ' + (food.category || '')).toLowerCase();
+
+  // Breakfast clues
+  const isBreakfast =
+    nameLower.includes('breakfast') ||
+    nameLower.includes('dairy') ||
+    nameLower.includes('egg') ||
+    nameLower.includes('cheese') ||
+    nameLower.includes('ful') ||
+    nameLower.includes('foul') ||
+    nameLower.includes('falafel') ||
+    nameLower.includes('taameya') ||
+    nameLower.includes('bread') ||
+    nameLower.includes('honey') ||
+    nameLower.includes('جبن') ||
+    nameLower.includes('بيض') ||
+    nameLower.includes('فول') ||
+    nameLower.includes('طعمية') ||
+    nameLower.includes('عسل') ||
+    nameLower.includes('خبز') ||
+    nameLower.includes('فطير');
+
+  // Lunch clues
+  const isLunch =
+    nameLower.includes('lunch') ||
+    nameLower.includes('stew') ||
+    nameLower.includes('koshary') ||
+    nameLower.includes('kebab') ||
+    nameLower.includes('kofta') ||
+    nameLower.includes('meat') ||
+    nameLower.includes('chicken') ||
+    nameLower.includes('fish') ||
+    nameLower.includes('rice') ||
+    nameLower.includes('pasta') ||
+    nameLower.includes('mahashi') ||
+    nameLower.includes('street food') ||
+    nameLower.includes('لحم') ||
+    nameLower.includes('دجاج') ||
+    nameLower.includes('سمك') ||
+    nameLower.includes('أرز') ||
+    nameLower.includes('ارز') ||
+    nameLower.includes('كشري') ||
+    nameLower.includes('مكرونة') ||
+    nameLower.includes('محشي') ||
+    nameLower.includes('طواجن') ||
+    nameLower.includes('طاجن');
+
+  // Snack clues
+  const isSnack =
+    nameLower.includes('snack') ||
+    nameLower.includes('beverage') ||
+    nameLower.includes('dessert') ||
+    nameLower.includes('fruit') ||
+    nameLower.includes('nuts') ||
+    nameLower.includes('yogurt') ||
+    nameLower.includes('milk') ||
+    nameLower.includes('فاكهة') ||
+    nameLower.includes('زبادي') ||
+    nameLower.includes('عصير') ||
+    nameLower.includes('شاي') ||
+    nameLower.includes('قهوة') ||
+    nameLower.includes('مكسرات') ||
+    nameLower.includes('بسكويت') ||
+    nameLower.includes('حلوى') ||
+    nameLower.includes('شوكولاتة');
+
+  if (isBreakfast) categories.push('breakfast');
+  if (isLunch) categories.push('lunch');
+  // Dinner can overlap with breakfast or lunch
+  if (isBreakfast || isLunch || nameLower.includes('dinner') || nameLower.includes('عشاء')) {
+    categories.push('dinner');
+  }
+  if (isSnack) categories.push('snack');
+
+  // Fallbacks based on calories if nothing matched
+  if (categories.length === 0) {
+    const avgCal = (food.calories_min + food.calories_max) / 2;
+    if (avgCal < 200) {
+      categories.push('snack');
+    } else if (avgCal < 450) {
+      categories.push('breakfast', 'dinner');
+    } else {
+      categories.push('lunch', 'dinner');
+    }
+  }
+
+  return categories;
+}
+
+export async function generateMealPlan(userId: string): Promise<MealPlanResponse> {
+  // 1. Fetch user targets
+  const user = await getUserProfile(userId);
+  if (!user.daily_calorie_goal) {
+    throw new ValidationError('User profile must have targets calculated before generating a meal plan.');
+  }
+
+  const targetCal = Number(user.daily_calorie_goal);
+  const targetProt = Number(user.target_protein_g || 0);
+  const targetCarb = Number(user.target_carbs_g || 0);
+  const targetFat = Number(user.target_fat_g || 0);
+
+  // 2. Fetch all foods from DB
+  const foods = await query<FoodRecord>('SELECT * FROM foods ORDER BY verified DESC, created_at DESC');
+
+  // 3. Classify into pools
+  const breakfastPool: FoodRecord[] = [];
+  const lunchPool: FoodRecord[] = [];
+  const dinnerPool: FoodRecord[] = [];
+  const snackPool: FoodRecord[] = [];
+
+  for (const food of foods) {
+    const cats = classifyFood(food);
+    if (cats.includes('breakfast')) breakfastPool.push(food);
+    if (cats.includes('lunch')) lunchPool.push(food);
+    if (cats.includes('dinner')) dinnerPool.push(food);
+    if (cats.includes('snack')) snackPool.push(food);
+  }
+
+  let chosenCombination: {
+    breakfast: FoodRecord;
+    lunch: FoodRecord;
+    dinner: FoodRecord;
+    snack: FoodRecord;
+  } | null = null;
+
+  // 4. Try matching from DB if pools are not empty
+  if (
+    breakfastPool.length > 0 &&
+    lunchPool.length > 0 &&
+    dinnerPool.length > 0 &&
+    snackPool.length > 0
+  ) {
+    // Limit pool sizes to prevent performance issues (max 20)
+    const bSlice = breakfastPool.slice(0, 20);
+    const lSlice = lunchPool.slice(0, 20);
+    const dSlice = dinnerPool.slice(0, 20);
+    const sSlice = snackPool.slice(0, 20);
+
+    let bestScore = Infinity;
+
+    for (const b of bSlice) {
+      const bCal = (b.calories_min + b.calories_max) / 2;
+      const bProt = (Number(b.protein_min_g) + Number(b.protein_max_g)) / 2;
+      const bCarb = (Number(b.carbs_min_g) + Number(b.carbs_max_g)) / 2;
+      const bFat = (Number(b.fat_min_g) + Number(b.fat_max_g)) / 2;
+
+      for (const l of lSlice) {
+        const lCal = (l.calories_min + l.calories_max) / 2;
+        const lProt = (Number(l.protein_min_g) + Number(l.protein_max_g)) / 2;
+        const lCarb = (Number(l.carbs_min_g) + Number(l.carbs_max_g)) / 2;
+        const lFat = (Number(l.fat_min_g) + Number(l.fat_max_g)) / 2;
+
+        for (const d of dSlice) {
+          const dCal = (d.calories_min + d.calories_max) / 2;
+          const dProt = (Number(d.protein_min_g) + Number(d.protein_max_g)) / 2;
+          const dCarb = (Number(d.carbs_min_g) + Number(d.carbs_max_g)) / 2;
+          const dFat = (Number(d.fat_min_g) + Number(d.fat_max_g)) / 2;
+
+          for (const s of sSlice) {
+            const sCal = (s.calories_min + s.calories_max) / 2;
+            const sProt = (Number(s.protein_min_g) + Number(s.protein_max_g)) / 2;
+            const sCarb = (Number(s.carbs_min_g) + Number(s.carbs_max_g)) / 2;
+            const sFat = (Number(s.fat_min_g) + Number(s.fat_max_g)) / 2;
+
+            const totalCal = bCal + lCal + dCal + sCal;
+            const totalProt = bProt + lProt + dProt + sProt;
+            const totalCarb = bCarb + lCarb + dCarb + sCarb;
+            const totalFat = bFat + lFat + dFat + sFat;
+
+            // Check if within thresholds (Calories ±10%, macros ±20%)
+            const calDiffPct = Math.abs(totalCal - targetCal) / targetCal;
+            const protDiffPct = Math.abs(totalProt - targetProt) / (targetProt || 1);
+            const carbDiffPct = Math.abs(totalCarb - targetCarb) / (targetCarb || 1);
+            const fatDiffPct = Math.abs(totalFat - targetFat) / (targetFat || 1);
+
+            if (calDiffPct <= 0.1 && protDiffPct <= 0.2 && carbDiffPct <= 0.2 && fatDiffPct <= 0.2) {
+              // Score combination: lower is better
+              const score = 0.5 * calDiffPct + 0.2 * protDiffPct + 0.15 * carbDiffPct + 0.15 * fatDiffPct;
+              if (score < bestScore) {
+                bestScore = score;
+                chosenCombination = { breakfast: b, lunch: l, dinner: d, snack: s };
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  if (chosenCombination) {
+    // 5a. Found database combination! Format and return it
+    const { breakfast, lunch, dinner, snack } = chosenCombination;
+    const formatRange = (min: number | string, max: number | string, unit: string) =>
+      `${min}${unit} - ${max}${unit}`;
+
+    const items: MealPlanItem[] = [
+      {
+        mealType: 'breakfast',
+        foodId: breakfast.id,
+        name: breakfast.name,
+        name_en: breakfast.name_en,
+        category: breakfast.category,
+        serving_desc: breakfast.serving_desc,
+        caloriesRange: formatRange(breakfast.calories_min, breakfast.calories_max, ''),
+        proteinRange: formatRange(breakfast.protein_min_g, breakfast.protein_max_g, 'g'),
+        carbsRange: formatRange(breakfast.carbs_min_g, breakfast.carbs_max_g, 'g'),
+        fatRange: formatRange(breakfast.fat_min_g, breakfast.fat_max_g, 'g'),
+        alerts: ['Retrieved from verified local food database.'],
+      },
+      {
+        mealType: 'lunch',
+        foodId: lunch.id,
+        name: lunch.name,
+        name_en: lunch.name_en,
+        category: lunch.category,
+        serving_desc: lunch.serving_desc,
+        caloriesRange: formatRange(lunch.calories_min, lunch.calories_max, ''),
+        proteinRange: formatRange(lunch.protein_min_g, lunch.protein_max_g, 'g'),
+        carbsRange: formatRange(lunch.carbs_min_g, lunch.carbs_max_g, 'g'),
+        fatRange: formatRange(lunch.fat_min_g, lunch.fat_max_g, 'g'),
+        alerts: ['Retrieved from verified local food database.'],
+      },
+      {
+        mealType: 'dinner',
+        foodId: dinner.id,
+        name: dinner.name,
+        name_en: dinner.name_en,
+        category: dinner.category,
+        serving_desc: dinner.serving_desc,
+        caloriesRange: formatRange(dinner.calories_min, dinner.calories_max, ''),
+        proteinRange: formatRange(dinner.protein_min_g, dinner.protein_max_g, 'g'),
+        carbsRange: formatRange(dinner.carbs_min_g, dinner.carbs_max_g, 'g'),
+        fatRange: formatRange(dinner.fat_min_g, dinner.fat_max_g, 'g'),
+        alerts: ['Retrieved from verified local food database.'],
+      },
+      {
+        mealType: 'snack',
+        foodId: snack.id,
+        name: snack.name,
+        name_en: snack.name_en,
+        category: snack.category,
+        serving_desc: snack.serving_desc,
+        caloriesRange: formatRange(snack.calories_min, snack.calories_max, ''),
+        proteinRange: formatRange(snack.protein_min_g, snack.protein_max_g, 'g'),
+        carbsRange: formatRange(snack.carbs_min_g, snack.carbs_max_g, 'g'),
+        fatRange: formatRange(snack.fat_min_g, snack.fat_max_g, 'g'),
+        alerts: ['Retrieved from verified local food database.'],
+      },
+    ];
+
+    const actualCal = Math.round(
+      items.reduce((sum, item) => {
+        const parts = item.caloriesRange.split(' - ');
+        return sum + (Number(parts[0]) + Number(parts[1])) / 2;
+      }, 0)
+    );
+    const actualProt = Number(
+      items.reduce((sum, item) => {
+        const parts = item.proteinRange.replace(/g/g, '').split(' - ');
+        return sum + (Number(parts[0]) + Number(parts[1])) / 2;
+      }, 0).toFixed(1)
+    );
+    const actualCarb = Number(
+      items.reduce((sum, item) => {
+        const parts = item.carbsRange.replace(/g/g, '').split(' - ');
+        return sum + (Number(parts[0]) + Number(parts[1])) / 2;
+      }, 0).toFixed(1)
+    );
+    const actualFat = Number(
+      items.reduce((sum, item) => {
+        const parts = item.fatRange.replace(/g/g, '').split(' - ');
+        return sum + (Number(parts[0]) + Number(parts[1])) / 2;
+      }, 0).toFixed(1)
+    );
+
+    return {
+      status: 'success',
+      source: 'db_lookup',
+      data: items,
+      totals: {
+        calories: { target: targetCal, actual: actualCal },
+        protein: { target: targetProt, actual: actualProt },
+        carbs: { target: targetCarb, actual: actualCarb },
+        fat: { target: targetFat, actual: actualFat },
+      },
+    };
+  }
+
+  // 5b. Falls back to AI!
+  const aiMeals = await generateAIMealPlan(targetCal, targetProt, targetCarb, targetFat);
+
+  const formattedItems: MealPlanItem[] = [];
+
+  for (const aiMeal of aiMeals) {
+    let foodRecord: FoodRecord | null = null;
+    const existing = await findByName(aiMeal.name);
+
+    if (existing) {
+      foodRecord = existing;
+    } else {
+      // Save/catalog newly generated food to DB so it is cached!
+      try {
+        foodRecord = await createFood({
+          name: aiMeal.name,
+          name_en: aiMeal.name_en,
+          barcode: null,
+          category: aiMeal.category,
+          serving_desc: aiMeal.serving_desc,
+          calories: aiMeal.calories,
+          protein: aiMeal.protein,
+          carbs: aiMeal.carbs,
+          fat: aiMeal.fat,
+          source: 'ai',
+        });
+      } catch (err) {
+        // Handle race condition or duplicate name check
+        foodRecord = await findByName(aiMeal.name);
+      }
+    }
+
+    const formatRange = (min: number | string, max: number | string, unit: string) =>
+      `${min}${unit} - ${max}${unit}`;
+
+    if (foodRecord) {
+      formattedItems.push({
+        mealType: aiMeal.meal_type,
+        foodId: foodRecord.id,
+        name: foodRecord.name,
+        name_en: foodRecord.name_en,
+        category: foodRecord.category,
+        serving_desc: foodRecord.serving_desc,
+        caloriesRange: formatRange(foodRecord.calories_min, foodRecord.calories_max, ''),
+        proteinRange: formatRange(foodRecord.protein_min_g, foodRecord.protein_max_g, 'g'),
+        carbsRange: formatRange(foodRecord.carbs_min_g, foodRecord.carbs_max_g, 'g'),
+        fatRange: formatRange(foodRecord.fat_min_g, foodRecord.fat_max_g, 'g'),
+        alerts: aiMeal.alerts,
+      });
+    } else {
+      // Direct formatting of the AI values if DB save failed completely
+      const calRange = computeIntRange(aiMeal.calories);
+      const protRange = computeDecimalRange(aiMeal.protein);
+      const carbRange = computeDecimalRange(aiMeal.carbs);
+      const fatRange = computeDecimalRange(aiMeal.fat);
+
+      formattedItems.push({
+        mealType: aiMeal.meal_type,
+        foodId: null,
+        name: aiMeal.name,
+        name_en: aiMeal.name_en,
+        category: aiMeal.category,
+        serving_desc: aiMeal.serving_desc,
+        caloriesRange: formatRange(calRange.min, calRange.max, ''),
+        proteinRange: formatRange(protRange.min, protRange.max, 'g'),
+        carbsRange: formatRange(carbRange.min, carbRange.max, 'g'),
+        fatRange: formatRange(fatRange.min, fatRange.max, 'g'),
+        alerts: aiMeal.alerts,
+      });
+    }
+  }
+
+  const actualCal = Math.round(
+    formattedItems.reduce((sum, item) => {
+      const parts = item.caloriesRange.split(' - ');
+      return sum + (Number(parts[0]) + Number(parts[1])) / 2;
+    }, 0)
+  );
+  const actualProt = Number(
+    formattedItems.reduce((sum, item) => {
+      const parts = item.proteinRange.replace(/g/g, '').split(' - ');
+      return sum + (Number(parts[0]) + Number(parts[1])) / 2;
+    }, 0).toFixed(1)
+  );
+  const actualCarb = Number(
+    formattedItems.reduce((sum, item) => {
+      const parts = item.carbsRange.replace(/g/g, '').split(' - ');
+      return sum + (Number(parts[0]) + Number(parts[1])) / 2;
+    }, 0).toFixed(1)
+  );
+  const actualFat = Number(
+    formattedItems.reduce((sum, item) => {
+      const parts = item.fatRange.replace(/g/g, '').split(' - ');
+      return sum + (Number(parts[0]) + Number(parts[1])) / 2;
+    }, 0).toFixed(1)
+  );
+
+  return {
+    status: 'success',
+    source: 'ai_generation',
+    data: formattedItems,
+    totals: {
+      calories: { target: targetCal, actual: actualCal },
+      protein: { target: targetProt, actual: actualProt },
+      carbs: { target: targetCarb, actual: actualCarb },
+      fat: { target: targetFat, actual: actualFat },
     },
   };
 }

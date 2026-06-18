@@ -28,6 +28,12 @@ export const AnalyzePhotoMealBodySchema = z.object({
 
 export type AnalyzePhotoMealBody = z.infer<typeof AnalyzePhotoMealBodySchema>;
 
+export const MealPlanQuerySchema = z.object({
+  userId: z.string().uuid('userId must be a valid UUID'),
+});
+
+export type MealPlanQuery = z.infer<typeof MealPlanQuerySchema>;
+
 // ── AI Engine Internal Response Types ─────────────────────────────────────
 
 export interface MacroRange {
@@ -61,5 +67,31 @@ export interface AnalyzeMealResponse {
     userId: string;
     analyzedAt: string;
     logId: string;
+  };
+}
+
+export interface MealPlanItem {
+  mealType: 'breakfast' | 'lunch' | 'dinner' | 'snack';
+  foodId: string | null;
+  name: string;
+  name_en: string | null;
+  category: string | null;
+  serving_desc: string | null;
+  caloriesRange: string;
+  proteinRange: string;
+  carbsRange: string;
+  fatRange: string;
+  alerts: string[];
+}
+
+export interface MealPlanResponse {
+  status: 'success';
+  source: 'db_lookup' | 'ai_generation';
+  data: MealPlanItem[];
+  totals: {
+    calories: { target: number; actual: number };
+    protein: { target: number; actual: number };
+    carbs: { target: number; actual: number };
+    fat: { target: number; actual: number };
   };
 }
